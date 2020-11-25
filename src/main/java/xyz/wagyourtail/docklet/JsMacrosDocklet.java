@@ -1,11 +1,12 @@
 package xyz.wagyourtail.docklet;
 import com.sun.javadoc.*;
+import xyz.wagyourtail.docklet.parsers.ClassParser;
+import xyz.wagyourtail.docklet.parsers.EventParser;
+import xyz.wagyourtail.docklet.parsers.LibraryParser;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.LinkedList;
-import java.util.List;
+import java.util.*;
 
 @SuppressWarnings("unused")
 public class JsMacrosDocklet {
@@ -14,12 +15,14 @@ public class JsMacrosDocklet {
     public static FileHandler outputTS;
     public static String version = null;
     
-    public static List<LibDoc> libs = new LinkedList<>();
-    public static List<String> classes = new LinkedList<>();
-    public static List<EventDoc> events = new LinkedList<>();
+    public static final List<LibraryParser> libs = new LinkedList<>();
+    public static final Map<String, Set<ClassParser>> classes = new LinkedHashMap<>();
+    public static final List<EventParser> events = new LinkedList<>();
     
+    public static RootDoc root;
 
     public static boolean start (RootDoc root) {
+        JsMacrosDocklet.root = root;
         versionOutDir = new File(outDir, version);
         outputTS = new FileHandler(new File(versionOutDir, "JsMacros.d.ts"));
         //clear version folder
@@ -35,20 +38,15 @@ public class JsMacrosDocklet {
         }
     
         for (ClassDoc clazz : root.classes()) {
-            boolean flag = true;
             for (AnnotationDesc desc : clazz.annotations()) {
                 if (desc.annotationType().name().equals("Library")) {
                     String value = null;
-                    String[] langs = new String[]{};
                     for (AnnotationDesc.ElementValuePair val : desc.elementValues()) {
                         if (val.element().name().equals("value")) {
                             value = (String) val.value().value();
-                        } else {
-                            langs = Arrays.stream(((AnnotationValue[]) val.value().value())).map(e -> e.value()).toArray(String[]::new);
                         }
                     }
-                    genLib(clazz, value, langs);
-                    flag = false;
+                    genLib(clazz, value);
                     break;
                 }
                 if (desc.annotationType().name().equals("Event")) {
@@ -62,16 +60,41 @@ public class JsMacrosDocklet {
                         }
                     }
                     genEvent(clazz, name, oldName);
-                    flag = false;
                     break;
                 }
             }
-            if (flag) {
-                genClass(clazz);
+        }
+    
+        try {
+            outputTS.append("declare const event: Events.BaseEvent;\n" +
+                             "declare const file: Java.java.io.File\n\n" +
+                             
+                             "declare namespace Events {\n" +
+                                "\texport interface BaseEvent extends Java.Object {\n" +
+                                    "\t\tgetEventName(): string;\n" +
+                                "\t}");
+        } catch (IOException e) {
+            e.printStackTrace();
+            return false;
+        }
+        
+        for (EventParser event : events) {
+            try {
+                outputTS.append("\n\n" + event.genTypeScript());
+            } catch (IOException e) {
+                e.printStackTrace();
+                return false;
             }
         }
         
-        for (LibDoc lib : libs) {
+        try {
+            outputTS.append("\n}");
+        } catch (IOException e) {
+            e.printStackTrace();
+            return false;
+        }
+    
+        for (LibraryParser lib : libs) {
             try {
                 outputTS.append("\n\n" + lib.genTypeScript());
             } catch (IOException e) {
@@ -79,7 +102,19 @@ public class JsMacrosDocklet {
                 return false;
             }
         }
-        
+    
+        ClassParser.TSPackage pkg = null;
+        while (ClassParser.topLevelPackage.dirty) {
+            pkg = ClassParser.topLevelPackage.genTypeScript();
+        }
+    
+        try {
+            outputTS.append("\n\ndeclare" + pkg.genTypeScript().substring(6));
+        } catch (IOException e) {
+            e.printStackTrace();
+            return false;
+        }
+    
         return true;
     }
     public static int optionLength(String var0) {
@@ -116,12 +151,12 @@ public class JsMacrosDocklet {
         return true;
     }
     
-    public static void genLib(ClassDoc lib, String libName, String[] languages) {
-        libs.add(new LibDoc(lib, libName, languages));
+    public static void genLib(ClassDoc lib, String libName) {
+        libs.add(new LibraryParser(lib, libName));
     }
     
     public static void genEvent(ClassDoc event, String name, String oldName) {
-    
+        events.add(new EventParser(event, name, oldName));
     }
     
     public static void genClass(ClassDoc clazz) {
